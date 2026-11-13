@@ -1,0 +1,4 @@
+torch
+transformers
+datasets
+accelerate>=1.1.0

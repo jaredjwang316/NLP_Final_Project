@@ -1,0 +1,13 @@
+# Project-specific directories and models
+bert_pretrained/
+bert_training_results/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
