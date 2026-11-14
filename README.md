@@ -63,6 +63,6 @@ The overall workflow is:
 2. Install the required dependencies.
 3. Download the pretrained BERT model.
 4. Fine-tune BERT on the SST-2 sentiment classification dataset.
-5. Evaluate and save the fine-tuned model on the original SST-2 validation dataset (clean, unmodified sentences) and save the model.
+5. Evaluate and save the fine-tuned model on the original SST-2 validation dataset (clean, unmodified sentences) and save the model.  This establishes baseline performance, which serves as a reference point for comparing how different linguistic perturbations affect the model's sentiment classification accuracy and overall robustness.
 
 **Note:** The `bert_pretrained/` folder must be generated before running `train_bert.py`, since the training script loads the pretrained model from that directory.
