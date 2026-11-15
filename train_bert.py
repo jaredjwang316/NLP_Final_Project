@@ -37,7 +37,7 @@ def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", choices=["full", "lora", "qlora"], default="full")
-    parser.add_argument("--model", default="./bert_pretrained")
+    parser.add_argument("--model", default="google-bert/bert-base-uncased")
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=None)
