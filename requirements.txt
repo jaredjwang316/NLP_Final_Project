@@ -2,3 +2,5 @@ torch
 transformers
 datasets
 accelerate>=1.1.0
+peft>=0.11.0
+bitsandbytes>=0.43.0

@@ -1,201 +1,210 @@
+"""Fine-tune BERT on SST-2 with full fine-tuning, LoRA, or QLoRA.
+
+Colab usage:
+    pip install peft bitsandbytes
+    python train_bert.py --method qlora --drive_dir /content/drive/MyDrive/nlp_outputs
+QLoRA requires an NVIDIA GPU; full and lora run on CPU or GPU.
+"""
+
+import argparse
+
 import numpy as np
+import torch
 from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
     DataCollatorWithPadding,
     TrainingArguments,
-    Trainer
+    Trainer,
 )
 
-# --------------------------------------------------
-# 1. Load the pretrained BERT model and tokenizer
-# --------------------------------------------------
+DEFAULT_METHODS = {
+    "full": {"lr": 2e-5, "batch_size": 16},
+    "lora": {"lr": 1e-4, "batch_size": 32},
+    "qlora": {"lr": 2e-4, "batch_size": 32},
+}
 
-# This assumes your downloaded model is saved in
-# a folder named "bert_pretrained" in your project directory.
-MODEL_NAME = "./bert_pretrained"
-
-print("Loading pretrained BERT...")
-
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-
-# Add a classification head with 2 output labels:
-# 0 = Negative, 1 = Positive
-model = AutoModelForSequenceClassification.from_pretrained(
-    MODEL_NAME,
-    num_labels=2,
-    id2label={0: "NEGATIVE", 1: "POSITIVE"},
-    label2id={"NEGATIVE": 0, "POSITIVE": 1}
-)
-
-print("BERT model loaded!")
+DEFAULT_OUTPUT_DIRS = {
+    "full": "./fine_tuned_bert",
+    "lora": "./fine_tuned_bert_lora",
+    "qlora": "./fine_tuned_bert_qlora",
+}
 
 
-# --------------------------------------------------
-# 2. Load the SST-2 dataset
-# --------------------------------------------------
+# Arguments
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--method", choices=["full", "lora", "qlora"], default="full")
+    parser.add_argument("--model", default="./bert_pretrained")
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--max_length", type=int, default=128)
+    parser.add_argument("--max_steps", type=int, default=-1)
+    parser.add_argument("--lora_r", type=int, default=16)
+    parser.add_argument("--lora_alpha", type=int, default=32)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output_dir", default=None)
+    parser.add_argument("--drive_dir", default=None)
+    return parser.parse_args()
 
-print("Loading SST-2 dataset...")
 
-dataset = load_dataset("stanfordnlp/sst2")
+# Model loading
+def load_model(method, model_path, num_labels=2):
+    """Load the model, applying 4-bit quantization for qlora."""
+    quantization_config = None
+    if method == "qlora":
+        from transformers import BitsAndBytesConfig
 
-train_data = dataset["train"]
-validation_data = dataset["validation"]
-
-print("Training examples:", len(train_data))
-print("Validation examples:", len(validation_data))
-
-
-# --------------------------------------------------
-# 3. Tokenize the sentences
-# --------------------------------------------------
-
-def tokenize_function(examples):
-    return tokenizer(
-        examples["sentence"],
-        truncation=True,
-        max_length=128
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+    return AutoModelForSequenceClassification.from_pretrained(
+        model_path,
+        num_labels=num_labels,
+        id2label={0: "NEGATIVE", 1: "POSITIVE"},
+        label2id={"NEGATIVE": 0, "POSITIVE": 1},
+        quantization_config=quantization_config,
     )
 
-print("Tokenizing training data...")
 
-tokenized_train = train_data.map(
-    tokenize_function,
-    batched=True
-)
+# LoRA setup
+def build_lora_model(model, method, r, alpha, dropout):
+    """Wrap the model with LoRA adapters (no-op for full fine-tuning)."""
+    if method == "full":
+        return model
+    from peft import LoraConfig, TaskType, get_peft_model
 
-print("Tokenizing validation data...")
+    if method == "qlora":
+        from peft import prepare_model_for_kbit_training
 
-tokenized_validation = validation_data.map(
-    tokenize_function,
-    batched=True
-)
-
-# Trainer expects the target column to be named "labels".
-tokenized_train = tokenized_train.rename_column("label", "labels")
-tokenized_validation = tokenized_validation.rename_column("label", "labels")
-
-# Remove columns that the model does not need.
-tokenized_train = tokenized_train.remove_columns(["sentence", "idx"])
-tokenized_validation = tokenized_validation.remove_columns(["sentence", "idx"])
-
-# Pad sentences dynamically when they are grouped into batches.
-data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-
-print("Tokenization completed!")
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    config = LoraConfig(
+        task_type=TaskType.SEQ_CLS,
+        r=r,
+        lora_alpha=alpha,
+        lora_dropout=dropout,
+        target_modules=["query", "key", "value", "dense"],
+    )
+    model = get_peft_model(model, config)
+    model.print_trainable_parameters()
+    return model
 
 
-# --------------------------------------------------
-# 4. Define evaluation metrics
-# --------------------------------------------------
-
+# Metrics
 def compute_metrics(eval_pred):
-
-    predictions = eval_pred.predictions
+    """Compute accuracy, precision, recall, and F1 for the positive class."""
+    predictions = np.argmax(eval_pred.predictions, axis=1)
     labels = eval_pred.label_ids
-
-    # Convert the two output scores into a predicted label.
-    predictions = np.argmax(predictions, axis=1)
-
-    # Calculate accuracy.
     accuracy = np.mean(predictions == labels)
-
-    # Calculate precision, recall, and F1 for positive class (label 1).
     true_positive = np.sum((predictions == 1) & (labels == 1))
     false_positive = np.sum((predictions == 1) & (labels == 0))
     false_negative = np.sum((predictions == 0) & (labels == 1))
-
     precision = true_positive / (true_positive + false_positive + 1e-8)
     recall = true_positive / (true_positive + false_negative + 1e-8)
-
     f1 = 2 * precision * recall / (precision + recall + 1e-8)
-
-    return {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1
-    }
+    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
 
 
-# --------------------------------------------------
-# 5. Configure the fine-tuning process
-# --------------------------------------------------
-
-training_args = TrainingArguments(
-    output_dir="./bert_training_results",
-
-    learning_rate=2e-5,
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=32,
-
-    num_train_epochs=3,
-    weight_decay=0.01,
-
-    eval_strategy="epoch",
-    save_strategy="epoch",
-
-    load_best_model_at_end=True,
-    metric_for_best_model="accuracy",
-    greater_is_better=True,
-
-    logging_steps=100,
-    save_total_limit=2,
-
-    seed=42,
-    report_to="none"
-)
+# Training arguments
+def build_training_args(method, args):
+    """Build TrainingArguments for the chosen method."""
+    return TrainingArguments(
+        output_dir=args.output_dir or f"./bert_training_results_{method}",
+        learning_rate=args.lr,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size * 2,
+        num_train_epochs=args.epochs,
+        max_steps=args.max_steps,
+        weight_decay=0.01,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=args.max_steps < 0,
+        metric_for_best_model="accuracy",
+        greater_is_better=True,
+        logging_steps=100,
+        save_total_limit=2,
+        seed=args.seed,
+        fp16=torch.cuda.is_available(),
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        report_to="none",
+    )
 
 
-# --------------------------------------------------
-# 6. Create the Trainer
-# --------------------------------------------------
+# Main
+def main():
+    """Run the fine-tuning pipeline for the chosen method."""
+    args = parse_args()
+    defaults = DEFAULT_METHODS[args.method]
+    if args.lr is None:
+        args.lr = defaults["lr"]
+    if args.batch_size is None:
+        args.batch_size = defaults["batch_size"]
+    output_path = args.output_dir or DEFAULT_OUTPUT_DIRS[args.method]
 
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized_train,
-    eval_dataset=tokenized_validation,
-    processing_class=tokenizer,
-    data_collator=data_collator,
-    compute_metrics=compute_metrics
-)
+    print(f"Method: {args.method} | Loading model from {args.model}...")
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    model = load_model(args.method, args.model)
+    model = build_lora_model(model, args.method, args.lora_r, args.lora_alpha, args.lora_dropout)
+
+    print("Loading and tokenizing SST-2...")
+    dataset = load_dataset("stanfordnlp/sst2")
+
+    def tokenize_function(examples):
+        return tokenizer(examples["sentence"], truncation=True, max_length=args.max_length)
+
+    tokenized = dataset.map(tokenize_function, batched=True)
+    tokenized = tokenized.rename_column("label", "labels")
+    tokenized = tokenized.remove_columns(["sentence", "idx"])
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+    training_args = build_training_args(args.method, args)
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized["train"],
+        eval_dataset=tokenized["validation"],
+        processing_class=tokenizer,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+    )
+
+    print("Starting fine-tuning...")
+    trainer.train()
+
+    print("Evaluating on clean SST-2 validation data...")
+    results = trainer.evaluate()
+    for metric, value in results.items():
+        print(metric, ":", value)
+
+    print(f"Saving to {output_path}...")
+    if args.method == "full":
+        trainer.save_model(output_path)
+        tokenizer.save_pretrained(output_path)
+    elif args.method == "lora":
+        model.save_pretrained(output_path)
+        tokenizer.save_pretrained(output_path)
+        merged = model.merge_and_unload()
+        merged.save_pretrained(f"{output_path}_merged")
+        tokenizer.save_pretrained(f"{output_path}_merged")
+    else:
+        model.save_pretrained(output_path)
+        tokenizer.save_pretrained(output_path)
+
+    if args.drive_dir:
+        import shutil
+
+        shutil.copytree(output_path, args.drive_dir, dirs_exist_ok=True)
+        print(f"Copied outputs to {args.drive_dir}")
+
+    print("Training script completed successfully!")
 
 
-# --------------------------------------------------
-# 7. Fine-tune BERT
-# --------------------------------------------------
-
-print("\nStarting BERT fine-tuning...")
-
-trainer.train()
-
-print("\nFine-tuning completed!")
-
-
-# --------------------------------------------------
-# 8. Evaluate the fine-tuned model
-# --------------------------------------------------
-
-print("\nEvaluating on clean SST-2 validation data...")
-
-results = trainer.evaluate()
-
-print("\nValidation results:")
-
-for metric, value in results.items():
-    print(metric, ":", value)
-
-
-# --------------------------------------------------
-# 9. Save the fine-tuned model
-# --------------------------------------------------
-
-output_path = "./fine_tuned_bert"
-
-trainer.save_model(output_path)
-tokenizer.save_pretrained(output_path)
-
-print("\nFine-tuned model saved to:", output_path)
-print("Training script completed successfully!")
+if __name__ == "__main__":
+    main()
