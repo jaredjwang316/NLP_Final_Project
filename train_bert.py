@@ -64,6 +64,7 @@ def load_model(method, model_path, num_labels=2):
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.float16,
+            llm_int8_skip_modules=["classifier"],
         )
     return AutoModelForSequenceClassification.from_pretrained(
         model_path,
