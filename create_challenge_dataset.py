@@ -3,45 +3,30 @@
 Each sentence gets k distinct transforms (k in [k_min, k_max]); each transform
 draws its own intensity p per sentence, and every candidate position is
 perturbed independently with probability p. Deterministic for a given seed.
+
+Semantic rewording and negation are generated using Gemini.  These LLM 
+transformations do not use an intensity probability.
+
+Deterministic for traditional transformations given a seed. LLM outputs may 
+vary between runs.
 """
 
 import argparse
 import json
 import random
+import os
+
+from dotenv import load_dotenv
+from google import genai
 from datasets import load_dataset
+
+load_dotenv()   #Load the environment variables from the .env file
 
 PUNCTUATION = ".,!?;:\"'()"
 
 DIACRITIC_MAP = {
     "a": "àáâä", "e": "éèêë", "i": "ïíîì", "o": "öóôò",
     "u": "üúûù", "n": "ñ", "c": "ç", "y": "ÿ",
-}
-
-SYNONYMS = {
-    "good": ["nice", "fine", "pleasant"], "bad": ["poor", "awful", "terrible"],
-    "great": ["wonderful", "excellent", "superb"], "movie": ["film", "picture"],
-    "film": ["movie", "picture"], "boring": ["dull", "tedious"],
-    "funny": ["amusing", "hilarious"], "beautiful": ["gorgeous", "stunning"],
-    "terrible": ["awful", "horrid"], "fun": ["enjoyable", "amusing"],
-    "smart": ["clever", "intelligent"], "acting": ["performance", "portrayal"],
-    "story": ["plot", "tale"], "worst": ["poorest", "lousiest"],
-    "best": ["finest", "greatest"], "actor": ["performer"],
-    "performance": ["acting", "turn"], "surprising": ["startling", "unexpected"],
-    "charming": ["delightful", "enchanting"], "clever": ["smart", "witty"],
-    "dull": ["boring", "lifeless"], "amazing": ["astonishing", "incredible"],
-    "wonderful": ["marvelous", "delightful"], "horrible": ["dreadful", "awful"],
-}
-
-NGRAM_MAP = {
-    ("not", "good"): ["bad"], ("very", "good"): ["great"], ("not", "bad"): ["decent"],
-    ("a", "lot", "of"): ["plenty", "of"], ("the", "film"): ["this", "movie"],
-    ("the", "movie"): ["the", "film"], ("this", "movie"): ["this", "film"],
-    ("one", "of", "the"): ["among", "the"], ("worth", "watching"): ["worth", "seeing"],
-    ("worth", "seeing"): ["worth", "watching"], ("so", "bad"): ["terrible"],
-    ("as", "well", "as"): ["along", "with"], ("in", "order", "to"): ["to"],
-    ("kind", "of"): ["sort", "of"], ("it", "is"): ["it's"], ("it's", "a"): ["it", "is"],
-    ("there", "is"): ["there's"], ("do", "not"): ["don't"], ("does", "not"): ["doesn't"],
-    ("can", "not"): ["can't"], ("will", "not"): ["won't"],
 }
 
 
@@ -151,22 +136,135 @@ def transform_punctuation(sentence, p, rng):
         words[i] = prefix + core + suffix
     return " ".join(words)
 
+# LLM-based semantic transformations
+SEMANTIC_SYSTEM_PROMPT = """
+You are an expert NLP data augmentation assistant.
 
-# Word-level transforms
-def transform_word_substitute(sentence, p, rng):
-    """Replace words from the synonym map with probability p."""
-    words = sentence.split()
-    for i, word in enumerate(words):
-        if rng.random() >= p:
-            continue
-        prefix, core, suffix = strip_punctuation(word)
-        lowered = core.lower()
-        if lowered in SYNONYMS:
-            replacement = rng.choice(SYNONYMS[lowered])
-            if core[0].isupper():
-                replacement = replacement.capitalize()
-            words[i] = prefix + replacement + suffix
-    return " ".join(words)
+You are generating challenging examples for an SST-2 sentiment
+classification robustness experiment.
+
+SST-2 is a movie review sentiment dataset with two labels:
+0 = negative sentiment
+1 = positive sentiment
+
+You will receive an original movie review and a requested
+transformation.
+
+Your job is to generate a natural, grammatically correct sentence
+that follows the requested transformation.
+
+General requirements:
+- Preserve the original topic and relevant information.
+- Use natural English.
+- Do not introduce unrelated information.
+- Avoid awkward or unnatural expressions.
+- Return only the requested structured JSON output.
+"""
+
+def generate_llm_transformation(sentence, label, transformation, client):
+    """Generate a semantic transformation using Gemini."""
+    instruction = ""
+    if transformation == "semantic_rewording":
+
+        instruction = """
+        Generate a semantic rewording of the original movie review.
+
+        Requirements:
+        1. Preserve the original meaning and sentiment.
+        2. Use different vocabulary, synonyms, and sentence structures.
+        3. Do not simply replace one word with another.
+        4. Preserve the important information and opinions.
+        5. Make the result sound like a naturally written movie review.
+        6. Do not reverse or change the sentiment.
+        """
+    elif transformation == "negation":
+
+        opposite_label = 1 - label
+
+        instruction = f"""
+        Generate a negation-based version of the original movie review
+        that reverses its overall sentiment.
+
+        Original sentiment label: {label}
+        Required sentiment label: {opposite_label}
+
+        Requirements:
+        1. Use natural negation or negative constructions.
+        2. Reverse the overall sentiment of the original review.
+        3. Preserve the original topic and as much of its content
+           as reasonably possible.
+        4. Do not simply insert the word "not" without changing
+           the actual sentiment.
+        5. Make the result sound like a naturally written movie review.
+        6. If a meaningful sentiment reversal cannot be generated,
+           return the original sentence and mark success as false.
+        """
+
+    else:
+        raise ValueError("Unknown transformation: " + transformation)
+
+    try:
+        response = client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL"),
+            contents=(
+                instruction
+                + "\n\nOriginal sentence: "
+                + sentence
+            ),
+            config={
+                "system_instruction": SEMANTIC_SYSTEM_PROMPT,
+                "response_mime_type": "application/json",
+                "response_schema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "transformed_sentence": {
+                            "type": "STRING"
+                        },
+                        "success": {
+                            "type": "BOOLEAN"
+                        }
+                    },
+                    "required": [
+                        "transformed_sentence",
+                        "success"
+                    ]
+                }
+            }
+        )
+
+        result = json.loads(response.text)
+
+        transformed = result["transformed_sentence"].strip()
+        success = result["success"]
+
+        if not success or not transformed:
+            return sentence
+
+        return transformed
+
+    except Exception as e:
+        print(f"Gemini transformation failed: {e}")
+        return sentence
+
+
+def transform_word_substitute(sentence, label, client):
+    """Generate a semantic rewording while preserving sentiment."""
+    return generate_llm_transformation(
+        sentence,
+        label,
+        "semantic_rewording",
+        client
+    )
+
+
+def transform_ngram_substitute(sentence, label, client):
+    """Generate a negation-based transformation."""
+    return generate_llm_transformation(
+        sentence,
+        label,
+        "negation",
+        client
+    )
 
 
 def transform_token_swap(sentence, p, rng):
@@ -191,29 +289,6 @@ def transform_token_delete(sentence, p, rng):
     return " ".join(keep)
 
 
-# N-gram transforms
-def transform_ngram_substitute(sentence, p, rng):
-    """Replace 2-3 word n-grams from the paraphrase map with probability p."""
-    words = sentence.split()
-    i = 0
-    out = []
-    while i < len(words):
-        matched = False
-        for n in (3, 2):
-            if i + n <= len(words):
-                gram = tuple(w.lower().strip(PUNCTUATION) for w in words[i:i + n])
-                if gram in NGRAM_MAP and rng.random() < p:
-                    replacement = rng.choice(NGRAM_MAP[gram])
-                    out.extend(replacement)
-                    i += n
-                    matched = True
-                    break
-        if not matched:
-            out.append(words[i])
-            i += 1
-    return " ".join(out)
-
-
 TRANSFORMS = [
     ("whitespace", transform_whitespace),
     ("punctuation", transform_punctuation),
@@ -226,25 +301,48 @@ TRANSFORMS = [
 ]
 
 # Pipeline
-def augment_sentence(sentence, rng, k_min=1, k_max=3):
+def augment_sentence(sentence, label, rng, client, k_min=1, k_max=3):
     """Apply k randomly chosen transforms, each with its own random intensity."""
     k = rng.randint(k_min, k_max)
     chosen = rng.sample(TRANSFORMS, k)
+
     applied = []
     intensities = {}
+
     for name, fn in chosen:
-        p = rng.uniform(0.1, 0.6)
-        modified = fn(sentence, p, rng)
+        if name == "word_substitute":
+            modified = fn(sentence, label, client)
+        elif name == "ngram_substitute":
+            modified = fn(sentence, label, client)
+            if modified != sentence:    #negation reverses the sentiment label
+                label = 1 - label
+        else:
+            p = rng.uniform(0.1, 0.6)
+            modified = fn(sentence, p, rng)
+
+            if modified != sentence:
+                intensities[name] = round(p, 2)
+        
         if modified != sentence:
             applied.append(name)
-            intensities[name] = round(p, 2)
             sentence = modified
-    return sentence, applied, intensities
+    return sentence, label, applied, intensities
 
 
 def main():
     """Generate the challenge dataset and write it to JSONL."""
     args = parse_args()
+
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        raise ValueError("GEMINI_API_KEY not found. Check your .env file.")
+
+    gemini_model = os.getenv("GEMINI_MODEL")
+    if not gemini_model:
+        raise ValueError("GEMINI_MODEL not found. Check your .env file.")
+
+    client = genai.Client(api_key=gemini_key)
+
     rng = random.Random(args.seed)
     dataset = load_dataset("stanfordnlp/sst2")[args.split]
     print(f"Total {args.split} sentences:", len(dataset))
@@ -253,13 +351,13 @@ def main():
     for i in range(len(dataset)):
         original = dataset[i]["sentence"]
         label = dataset[i]["label"]
-        modified, transforms, intensities = augment_sentence(original, rng, args.k_min, args.k_max)
+        modified, modified_label, transforms, intensities = augment_sentence(original, label, rng, client, args.k_min, args.k_max)
         rows.append({
             "id": i,
             "original_sentence": original,
             "modified_sentence": modified,
             "original_label": label,
-            "modified_label": label,
+            "modified_label": modified_label,
             "transforms": transforms,
             "intensity": intensities,
             "seed": args.seed,
