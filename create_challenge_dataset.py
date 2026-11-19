@@ -4,7 +4,7 @@ Each sentence gets k distinct transforms (k in [k_min, k_max]); each transform
 draws its own intensity p per sentence, and every candidate position is
 perturbed independently with probability p. Deterministic for a given seed.
 
-Semantic rewording and negation are generated using Gemini.  These LLM 
+Semantic rewording and negation are generated using Groq.  These LLM 
 transformations do not use an intensity probability.
 
 Deterministic for traditional transformations given a seed. LLM outputs may 
@@ -15,9 +15,10 @@ import argparse
 import json
 import random
 import os
+import time
 
 from dotenv import load_dotenv
-from google import genai
+from openai import OpenAI
 from datasets import load_dataset
 
 load_dotenv()   #Load the environment variables from the .env file
@@ -161,7 +162,7 @@ General requirements:
 """
 
 def generate_llm_transformation(sentence, label, transformation, client):
-    """Generate a semantic transformation using Gemini."""
+    """Generate a semantic transformation using Groq."""
     instruction = ""
     if transformation == "semantic_rewording":
 
@@ -196,44 +197,66 @@ def generate_llm_transformation(sentence, label, transformation, client):
         6. If a meaningful sentiment reversal cannot be generated,
            return the original sentence and mark success as false.
         """
-
     else:
         raise ValueError("Unknown transformation: " + transformation)
 
     try:
-        response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL"),
-            contents=(
-                instruction
-                + "\n\nOriginal sentence: "
-                + sentence
-            ),
-            config={
-                "system_instruction": SEMANTIC_SYSTEM_PROMPT,
-                "response_mime_type": "application/json",
-                "response_schema": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "transformed_sentence": {
-                            "type": "STRING"
-                        },
-                        "success": {
-                            "type": "BOOLEAN"
-                        },
-                        "sentiment_label": {
-                            "type": "INTEGER"
-                        }
-                    },
-                    "required": [
-                        "transformed_sentence",
-                        "success",
-                        "sentiment_label"
-                    ]
+        # Call Groq's Chat Completions API (an API endpoint for sending prompts to an LLM and receiving its 
+        # generated response) and store the returned response object in the response variable.
+        response = client.chat.completions.create(
+            model=os.getenv("GROQ_MODEL"),  #specifiy the LLM that Groq should use to generate the response
+            messages=[
+                {
+                    "role": "system",   # System message that establishes the LLM's role/behavior
+                    "content": SEMANTIC_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user", # User message that provides the actual/concrete task for the LLM to do
+                    "content": (
+                        instruction + "\n\nOriginal sentence: " + sentence
+                    )
                 }
-            }
+            ],
+            response_format={
+                # Tell LLM to return its response in a specific JSON structure instead of an ordinary conversational text
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "sentiment_transformation",
+                    "strict": True, # model must strictly adhere to the JSON format defined below
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "transformed_sentence": {
+                                "type": "string"
+                            },
+                            "success": {
+                                "type": "boolean"
+                            },
+                            "sentiment_label": {
+                                "type": "integer",
+                                "enum": [0, 1]  #sentiment label is an integer and can be values 0 or 1
+                            }
+                        },
+                        "required": [
+                            "transformed_sentence",
+                            "success",
+                            "sentiment_label"
+                        ],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            reasoning_effort = "low",
+            max_completion_tokens=1500   # maximum number of tokens the model can generate per response
         )
 
-        result = json.loads(response.text)
+        # Pause for 10 seconds after a successful API request.
+        time.sleep(10)
+
+        # Convert the LLM's response (string) to a Python dictionary
+        result = json.loads(
+            response.choices[0].message.content
+        )
 
         transformed = result["transformed_sentence"].strip()
         success = result["success"]
@@ -243,7 +266,7 @@ def generate_llm_transformation(sentence, label, transformation, client):
             return sentence
 
         # Validate the expected sentiment label.
-        expected_label  = label
+        expected_label = label
         if transformation == "negation":
             expected_label = 1 - label
 
@@ -253,7 +276,7 @@ def generate_llm_transformation(sentence, label, transformation, client):
         return transformed
 
     except Exception as e:
-        print(f"Gemini transformation failed: {e}")
+        print(f"Groq transformation failed: {e}")
         return sentence
 
 
@@ -343,15 +366,19 @@ def main():
     """Generate the challenge dataset and write it to JSONL."""
     args = parse_args()
 
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key:
-        raise ValueError("GEMINI_API_KEY not found. Check your .env file.")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        raise ValueError("GROQ_API_KEY not found. Check your .env file.")
 
-    gemini_model = os.getenv("GEMINI_MODEL")
-    if not gemini_model:
-        raise ValueError("GEMINI_MODEL not found. Check your .env file.")
+    groq_model = os.getenv("GROQ_MODEL")
+    if not groq_model:
+        raise ValueError("GROQ_MODEL not found. Check your .env file.")
 
-    client = genai.Client(api_key=gemini_key)
+    # Create a groq client object
+    client = OpenAI(
+        api_key=groq_api_key,
+        base_url="https://api.groq.com/openai/v1"
+    )
 
     rng = random.Random(args.seed)
     dataset = load_dataset("stanfordnlp/sst2")[args.split]
