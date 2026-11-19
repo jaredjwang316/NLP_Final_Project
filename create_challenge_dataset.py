@@ -221,8 +221,7 @@ def generate_llm_transformation(sentence, label, transformation, client):
                             "type": "BOOLEAN"
                         },
                         "sentiment_label": {
-                            "type": "INTEGER",
-                            "enum": [0, 1]
+                            "type": "INTEGER"
                         }
                     },
                     "required": [
