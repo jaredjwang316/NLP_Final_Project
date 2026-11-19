@@ -147,8 +147,7 @@ SST-2 is a movie review sentiment dataset with two labels:
 0 = negative sentiment
 1 = positive sentiment
 
-You will receive an original movie review and a requested
-transformation.
+You will receive an original movie review and a requested transformation.
 
 Your job is to generate a natural, grammatically correct sentence
 that follows the requested transformation.
@@ -191,10 +190,8 @@ def generate_llm_transformation(sentence, label, transformation, client):
         Requirements:
         1. Use natural negation or negative constructions.
         2. Reverse the overall sentiment of the original review.
-        3. Preserve the original topic and as much of its content
-           as reasonably possible.
-        4. Do not simply insert the word "not" without changing
-           the actual sentiment.
+        3. Preserve the original topic and as much of its content as reasonably possible.
+        4. Do not simply insert the word "not" without changing the actual sentiment.
         5. Make the result sound like a naturally written movie review.
         6. If a meaningful sentiment reversal cannot be generated,
            return the original sentence and mark success as false.
@@ -222,11 +219,16 @@ def generate_llm_transformation(sentence, label, transformation, client):
                         },
                         "success": {
                             "type": "BOOLEAN"
+                        },
+                        "sentiment_label": {
+                            "type": "INTEGER",
+                            "enum": [0, 1]
                         }
                     },
                     "required": [
                         "transformed_sentence",
-                        "success"
+                        "success",
+                        "sentiment_label"
                     ]
                 }
             }
@@ -236,8 +238,17 @@ def generate_llm_transformation(sentence, label, transformation, client):
 
         transformed = result["transformed_sentence"].strip()
         success = result["success"]
+        generated_label = result["sentiment_label"]
 
         if not success or not transformed:
+            return sentence
+
+        # Validate the expected sentiment label.
+        expected_label  = label
+        if transformation == "negation":
+            expected_label = 1 - label
+
+        if generated_label != expected_label:
             return sentence
 
         return transformed
