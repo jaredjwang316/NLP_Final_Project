@@ -2,6 +2,9 @@
 bert_pretrained/
 bert_training_results/
 
+# Data files
+*.jsonl
+
 # Virtual environments
 venv/
 .venv/
@@ -11,3 +14,7 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# File with environment variables
+.env
+
