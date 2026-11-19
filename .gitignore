@@ -15,6 +15,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# File with environment variables
+# Environment variables and API keys (keep local; do not commit)
 .env
 

@@ -7,6 +7,8 @@
 
 GPU acceleration is important because fine-tuning BERT involves computationally intensive matrix operations across millions of model parameters. Using a GPU significantly reduces training time compared to running the training process on a CPU.
 
+A Google Gemini API key is also required for the LLM-powered components of this project.
+
 ## 1. Environment Setup
 
 Create a Python virtual environment:
