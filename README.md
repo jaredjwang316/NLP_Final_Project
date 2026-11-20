@@ -3,11 +3,9 @@
 
 ## Prerequisites
 
-**A GPU-powered computer or an equivalent environment (such as Google Colab with GPU runtime enabled) is highly recommended for this project.**
+**A Groq API key is required for the LLM-powered components of this project. You will need to create a Groq API key and configure it in your `.env` file using the template provided in `.env.example`.  A GPU-powered computer or an equivalent environment (such as Google Colab with GPU runtime enabled) is highly recommended for this project.**
 
 GPU acceleration is important because fine-tuning BERT involves computationally intensive matrix operations across millions of model parameters. Using a GPU significantly reduces training time compared to running the training process on a CPU.
-
-A Groq API key is required for the LLM-powered components of this project. You will need to create a Groq API key and configure it in your `.env` file using the template provided in `.env.example`.
 
 ## 1. Environment Setup
 
