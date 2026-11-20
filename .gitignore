@@ -1,6 +1,6 @@
 # Project-specific directories and models
-bert_pretrained/
-bert_training_results/
+fine_tuned_bert/
+bert_training_results_full/
 
 # Data files
 *.jsonl

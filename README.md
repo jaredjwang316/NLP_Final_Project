@@ -15,11 +15,20 @@ Create a Python virtual environment:
 python -m venv venv
 ```
 
-Activate the virtual environment using Git Bash:
+Activate the virtual environment:
+
+**Git Bash:**
 
 ```bash
-source venv/Scripts/activate
+source venv\Scripts\activate
 ```
+
+**Linux:**
+
+```bash
+source venv/bin/activate
+```
+
 
 ## 2. Install Dependencies
 
@@ -45,17 +54,7 @@ If successful, the script will print a confirmation message, the configured mode
 
 **Note:** Keep your API key private. Do not commit or upload your `.env` file to GitHub or other public repositories.
 
-## 4. Download the Pretrained BERT Model
-
-Run the following script to download the pretrained `bert-base-uncased` model and its tokenizer from Hugging Face:
-
-```bash
-python download_bert_test.py
-```
-
-The pretrained model and tokenizer will be saved locally in a folder named `bert_pretrained/`.
-
-## 5. Fine-Tune BERT for Sentiment Classification
+## 4. Fine-Tune BERT for Sentiment Classification
 
 Run the training script:
 
@@ -71,7 +70,7 @@ After training is completed, the fine-tuned model and tokenizer will be saved in
 fine_tuned_bert/
 ```
 
-## 6. Generate Challenge Dataset
+## 5. Generate Challenge Dataset
 
 Run the following script to generate a challenge dataset containing linguistically perturbed versions of the original SST-2 sentences:
 
@@ -81,7 +80,7 @@ python create_challenge_dataset.py
 
 Once the script finishes executing, the generated dataset will be saved as `challenge_dataset.jsonl` in the project directory. This dataset will be used in subsequent experiments to evaluate the model's robustness against linguistic perturbations.
 
-## 7. Project Workflow
+## 6. Project Workflow
 
 The overall workflow is:
 
