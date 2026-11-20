@@ -159,6 +159,15 @@ General requirements:
 - Do not introduce unrelated information.
 - Avoid awkward or unnatural expressions.
 - Return only the requested structured JSON output.
+
+JSON output requirements:
+- Always provide all three required JSON fields.
+- sentiment_label must ALWAYS be an integer: either 0 or 1.
+- Never use null for sentiment_label.
+- For semantic rewording, sentiment_label must match the original label.
+- For successful negation, sentiment_label must be the opposite of the original label.
+- If a transformation fails, return the original sentence,
+  set success to false, and use the original sentiment label.
 """
 
 def generate_llm_transformation(sentence, label, transformation, client):
@@ -166,8 +175,11 @@ def generate_llm_transformation(sentence, label, transformation, client):
     instruction = ""
     if transformation == "semantic_rewording":
 
-        instruction = """
+        instruction = f"""
         Generate a semantic rewording of the original movie review.
+
+        Original sentiment label: {label}
+        Required sentiment label: {label}
 
         Requirements:
         1. Preserve the original meaning and sentiment.
@@ -176,6 +188,7 @@ def generate_llm_transformation(sentence, label, transformation, client):
         4. Preserve the important information and opinions.
         5. Make the result sound like a naturally written movie review.
         6. Do not reverse or change the sentiment.
+        7. Set sentiment_label to {label}.
         """
     elif transformation == "negation":
 
@@ -196,6 +209,7 @@ def generate_llm_transformation(sentence, label, transformation, client):
         5. Make the result sound like a naturally written movie review.
         6. If a meaningful sentiment reversal cannot be generated,
            return the original sentence and mark success as false.
+        7. Set sentiment_label to {opposite_label}.
         """
     else:
         raise ValueError("Unknown transformation: " + transformation)
@@ -277,6 +291,18 @@ def generate_llm_transformation(sentence, label, transformation, client):
 
     except Exception as e:
         print(f"Groq transformation failed: {e}")
+
+        if hasattr(e, "status_code") and e.status_code == 429:
+            raise RuntimeError(
+                "Groq rate limit reached. Stopping dataset generation."
+            ) from e
+
+        if hasattr(e, "body"):
+            print("Error details:", e.body)
+
+        print(f"Original sentence: {sentence}")
+        print(f"Transformation: {transformation}")
+        print(f"Original label: {label}")
         return sentence
 
 
@@ -385,20 +411,35 @@ def main():
     print(f"Total {args.split} sentences:", len(dataset))
 
     rows = []
-    for i in range(len(dataset)):
-        original = dataset[i]["sentence"]
-        label = dataset[i]["label"]
-        modified, modified_label, transforms, intensities = augment_sentence(original, label, rng, client, args.k_min, args.k_max)
-        rows.append({
-            "id": i,
-            "original_sentence": original,
-            "modified_sentence": modified,
-            "original_label": label,
-            "modified_label": modified_label,
-            "transforms": transforms,
-            "intensity": intensities,
-            "seed": args.seed,
-        })
+
+    batch_size = 10
+    for batch_start in range(0, len(dataset), batch_size):
+
+        batch_end = min(batch_start + batch_size, len(dataset))
+
+        print(f"\nProcessing batch: {batch_start + 1}-{batch_end}")
+
+        for i in range(batch_start, batch_end):
+
+            original = dataset[i]["sentence"]
+            label = dataset[i]["label"]
+
+            modified, modified_label, transforms, intensities = augment_sentence(
+                original, label, rng, client, args.k_min, args.k_max
+            )
+
+            rows.append({
+                "id": i,
+                "original_sentence": original,
+                "modified_sentence": modified,
+                "original_label": label,
+                "modified_label": modified_label,
+                "transforms": transforms,
+                "intensity": intensities,
+                "seed": args.seed,
+            })
+
+        print(f"Completed batch: {batch_start + 1}-{batch_end}")
 
     with open(args.output, "w", encoding="utf-8") as f:
         for row in rows:
