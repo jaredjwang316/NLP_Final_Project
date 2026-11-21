@@ -4,10 +4,13 @@ Each sentence gets k distinct transforms (k in [k_min, k_max]); each transform
 draws its own intensity p per sentence, and every candidate position is
 perturbed independently with probability p. Deterministic for a given seed.
 
-Semantic rewording and negation are generated using Groq.  These LLM 
+Semantic rewording and negation are generated using Groq.  These LLM
 transformations do not use an intensity probability.
 
-Deterministic for traditional transformations given a seed. LLM outputs may 
+The --transforms flag accepts a comma-separated allowlist of transform
+names; when empty, all transforms are eligible for sampling.
+
+Deterministic for traditional transformations given a seed. LLM outputs may
 vary between runs.
 """
 
@@ -40,6 +43,10 @@ def parse_args():
     parser.add_argument("--k_max", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--print_samples", type=int, default=0)
+    parser.add_argument("--transforms", default="")
+    parser.add_argument("--llm_sleep", type=float, default=2.0)
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--start", type=int, default=0)
     return parser.parse_args()
 
 
@@ -170,7 +177,7 @@ JSON output requirements:
   set success to false, and use the original sentiment label.
 """
 
-def generate_llm_transformation(sentence, label, transformation, client):
+def generate_llm_transformation(sentence, label, transformation, client, sleep_seconds):
     """Generate a semantic transformation using Groq."""
     instruction = ""
     if transformation == "semantic_rewording":
@@ -188,6 +195,25 @@ def generate_llm_transformation(sentence, label, transformation, client):
         4. Preserve the important information and opinions.
         5. Make the result sound like a naturally written movie review.
         6. Do not reverse or change the sentiment.
+        7. Set sentiment_label to {label}.
+        """
+    elif transformation == "ngram_substitute":
+
+        instruction = f"""
+        Generate a phrase-level paraphrase of the original movie review.
+
+        Original sentiment label: {label}
+        Required sentiment label: {label}
+
+        Requirements:
+        1. Rewrite the sentence at the phrase level, replacing multi-word
+           spans (n-grams) with alternative expressions.
+        2. Preserve the original meaning and sentiment exactly.
+        3. Keep the sentence length roughly the same.
+        4. Make the result sound like a naturally written movie review.
+        5. Do not reverse or change the sentiment.
+        6. If no meaningful paraphrase can be generated,
+           return the original sentence and mark success as false.
         7. Set sentiment_label to {label}.
         """
     elif transformation == "negation":
@@ -261,11 +287,11 @@ def generate_llm_transformation(sentence, label, transformation, client):
                 }
             },
             reasoning_effort = "low",
-            max_completion_tokens=1500   # maximum number of tokens the model can generate per response
+            max_completion_tokens=300   # maximum number of tokens the model can generate per response
         )
 
-        # Pause for 10 seconds after a successful API request.
-        time.sleep(10)
+        # Pause for a configurable interval after a successful API request.
+        time.sleep(sleep_seconds)
 
         # Convert the LLM's response (string) to a Python dictionary
         result = json.loads(
@@ -306,23 +332,36 @@ def generate_llm_transformation(sentence, label, transformation, client):
         return sentence
 
 
-def transform_word_substitute(sentence, label, client):
+def transform_word_substitute(sentence, label, client, sleep_seconds):
     """Generate a semantic rewording while preserving sentiment."""
     return generate_llm_transformation(
         sentence,
         label,
         "semantic_rewording",
-        client
+        client,
+        sleep_seconds
     )
 
 
-def transform_ngram_substitute(sentence, label, client):
-    """Generate a negation-based transformation."""
+def transform_ngram_substitute(sentence, label, client, sleep_seconds):
+    """Generate a phrase-level paraphrase while preserving sentiment."""
+    return generate_llm_transformation(
+        sentence,
+        label,
+        "ngram_substitute",
+        client,
+        sleep_seconds
+    )
+
+
+def transform_negation(sentence, label, client, sleep_seconds):
+    """Generate a negation-based transformation that reverses sentiment."""
     return generate_llm_transformation(
         sentence,
         label,
         "negation",
-        client
+        client,
+        sleep_seconds
     )
 
 
@@ -357,23 +396,28 @@ TRANSFORMS = [
     ("token_swap", transform_token_swap),
     ("token_delete", transform_token_delete),
     ("ngram_substitute", transform_ngram_substitute),
+    ("negation", transform_negation),
 ]
 
+TRANSFORM_NAMES = [name for name, _ in TRANSFORMS]
+
 # Pipeline
-def augment_sentence(sentence, label, rng, client, k_min=1, k_max=3):
-    """Apply k randomly chosen transforms, each with its own random intensity."""
+def augment_sentence(sentence, label, rng, client, sleep_seconds, k_min=1, k_max=3, allowed_transforms=TRANSFORMS):
+    """Apply k randomly chosen transforms, each with its own random intensity.
+
+    LLM transforms run on the current (possibly already transformed) sentence
+    and current label. A successful negation reverses the sentiment label.
+    """
     k = rng.randint(k_min, k_max)
-    chosen = rng.sample(TRANSFORMS, k)
+    chosen = rng.sample(allowed_transforms, min(k, len(allowed_transforms)))
 
     applied = []
     intensities = {}
 
     for name, fn in chosen:
-        if name == "word_substitute":
-            modified = fn(sentence, label, client)
-        elif name == "ngram_substitute":
-            modified = fn(sentence, label, client)
-            if modified != sentence:    #negation reverses the sentiment label
+        if name in ("word_substitute", "ngram_substitute", "negation"):
+            modified = fn(sentence, label, client, sleep_seconds)
+            if name == "negation" and modified != sentence:
                 label = 1 - label
         else:
             p = rng.uniform(0.1, 0.6)
@@ -381,7 +425,7 @@ def augment_sentence(sentence, label, rng, client, k_min=1, k_max=3):
 
             if modified != sentence:
                 intensities[name] = round(p, 2)
-        
+
         if modified != sentence:
             applied.append(name)
             sentence = modified
@@ -407,43 +451,56 @@ def main():
     )
 
     rng = random.Random(args.seed)
+
+    allowed = [t.strip() for t in args.transforms.split(",") if t.strip()]
+    if allowed:
+        unknown = [t for t in allowed if t not in TRANSFORM_NAMES]
+        if unknown:
+            raise ValueError("Unknown transforms: " + ", ".join(unknown))
+        allowed_transforms = [entry for entry in TRANSFORMS if entry[0] in allowed]
+    else:
+        allowed_transforms = TRANSFORMS
+
     dataset = load_dataset("stanfordnlp/sst2")[args.split]
+    if args.limit > 0:
+        dataset = dataset.select(range(min(args.limit, len(dataset))))
+    if args.start > 0:
+        dataset = dataset.select(range(args.start, len(dataset)))
     print(f"Total {args.split} sentences:", len(dataset))
 
     rows = []
-
     batch_size = 10
-    for batch_start in range(0, len(dataset), batch_size):
-
-        batch_end = min(batch_start + batch_size, len(dataset))
-
-        print(f"\nProcessing batch: {batch_start + 1}-{batch_end}")
-
-        for i in range(batch_start, batch_end):
-
-            original = dataset[i]["sentence"]
-            label = dataset[i]["label"]
-
-            modified, modified_label, transforms, intensities = augment_sentence(
-                original, label, rng, client, args.k_min, args.k_max
-            )
-
-            rows.append({
-                "id": i,
-                "original_sentence": original,
-                "modified_sentence": modified,
-                "original_label": label,
-                "modified_label": modified_label,
-                "transforms": transforms,
-                "intensity": intensities,
-                "seed": args.seed,
-            })
-
-        print(f"Completed batch: {batch_start + 1}-{batch_end}")
-
     with open(args.output, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        for batch_start in range(0, len(dataset), batch_size):
+
+            batch_end = min(batch_start + batch_size, len(dataset))
+
+            print(f"\nProcessing batch: {batch_start + 1}-{batch_end}")
+
+            for i in range(batch_start, batch_end):
+
+                original = dataset[i]["sentence"]
+                label = dataset[i]["label"]
+                row_id = args.start + i
+
+                modified, modified_label, transforms, intensities = augment_sentence(
+                    original, label, rng, client, args.llm_sleep, args.k_min, args.k_max, allowed_transforms
+                )
+
+                row = {
+                    "id": row_id,
+                    "original_sentence": original,
+                    "modified_sentence": modified,
+                    "original_label": label,
+                    "modified_label": modified_label,
+                    "transforms": transforms,
+                    "intensity": intensities,
+                    "seed": args.seed,
+                }
+                rows.append(row)
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+            print(f"Completed batch: {batch_start + 1}-{batch_end}")
 
     print("Challenge dataset written to:", args.output)
     print("Total rows:", len(rows))
