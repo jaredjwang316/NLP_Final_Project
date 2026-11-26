@@ -89,7 +89,7 @@ python evaluate_challenge_dataset.py --model_path fine_tuned_bert/ --dataset_pat
 ```
 
 
-## 6. Project Workflow
+## 7. Project Workflow
 
 The overall workflow is:
 
