@@ -80,6 +80,15 @@ python create_challenge_dataset.py
 
 Once the script finishes executing, the generated dataset will be saved as `challenge_dataset.jsonl` in the project directory. This dataset will be used in subsequent experiments to evaluate the model's robustness against linguistic perturbations.
 
+## 6. Evaluate Model Robustness Against Linguistic Perturbations
+
+After generating the challenge dataset, run the following script to evaluate the fine-tuned BERT model against the linguistically perturbed sentences:
+
+```bash
+python evaluate_challenge_dataset.py --model_path fine_tuned_bert/ --dataset_path challenge_dataset.jsonl
+```
+
+
 ## 6. Project Workflow
 
 The overall workflow is:
@@ -91,5 +100,4 @@ The overall workflow is:
 5. Fine-tune BERT on the SST-2 sentiment classification dataset.
 6. Evaluate and save the fine-tuned model on the original SST-2 validation dataset (clean, unmodified sentences) and save the model.  This establishes baseline performance, which serves as a reference point for comparing how different linguistic perturbations affect the model's sentiment classification accuracy and overall robustness.
 7. Generate the challenge dataset containing linguistically perturbed versions of the original SST-2 sentences for subsequent robustness evaluation.
-
-**Note:** The `bert_pretrained/` folder must be generated before running `train_bert.py`, since the training script loads the pretrained model from that directory.
+8. Evaluate the fine-tuned BERT model on the generated challenge dataset to assess its robustness against linguistic perturbations.

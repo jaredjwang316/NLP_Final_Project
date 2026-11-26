@@ -2,9 +2,6 @@
 fine_tuned_bert/
 bert_training_results_full/
 
-# Data files
-*.jsonl
-
 # Virtual environments
 venv/
 .venv/
